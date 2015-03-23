@@ -6,7 +6,7 @@ var s3 = new aws.S3();
 
 var fs = require('fs');
 var zlib = require('zlib');
-var tar = require('tar');
+var tar = require('tar-fs');
 
 /**
  * This API provides a way to save and restore files and directories to S3. The
@@ -38,12 +38,36 @@ function isDir(req) {
  * extracted from a tarball, overwriting existing files.
  */
 app.get('*', function(req, res, next) {
+	var key;
+	var path = req.originalUrl;
 	if (isDir(req)) {
-		console.log("dir");
+		console.log("restore dir");
+		key = path.slice(1,-1);
 	} else {
-		console.log("file");
+		console.log("restore file");
+		key = path.slice(1);
 	}
-	res.json({success: true});
+	var bucket = process.env.S3_BUCKET_NAME;
+	var params = {
+		Bucket: bucket,
+		Key: key
+	};
+	var file = s3.getObject(params, function(err, data) {
+		if (err) {
+			console.log("Error:",  err);
+			if (err.statusCode === 404) {
+				res.status(404);
+				res.json({error: err.message});
+			} else {
+				res.status(500);
+				res.json({error: err.message});
+			}
+		} else {
+			console.log(data.Metadata);
+			console.log(data);
+			res.json({success: true});
+		}
+	});
 });
 
 /**
@@ -57,10 +81,18 @@ app.put('*', function(req, res, next) {
 	
 	//create bucket if not exists
 	var bucket = process.env.S3_BUCKET_NAME;
+	var params = {
+		Bucket: bucket,
+		CreateBucketConfiguration: {
+			//this doesn't seem to work
+			LocationConstraint: process.env.AWS_DEFAULT_REGION
+		}
+
+	};
 	s3.createBucket({Bucket: bucket}, function(err, data) {
 		if (err) {
 			if (err.code === "BucketAlreadyOwnedByYou") {
-				console.log("Bucket already exists");
+				console.log("Bucket already exists. Continuing.");
 			} else {
 				console.log("Error:",  err);
 				res.status(500);
@@ -68,42 +100,79 @@ app.put('*', function(req, res, next) {
 			}
 		} else {
 			console.log("Bucket '" + bucket + "' created or already existed");
-			console.log("Data:", data);
 		}
 		//bucket should exist by now. upload (compressed) file or directory
 		var path = req.originalUrl;
+		var compressed = process.env.COMPRESS.toLowerCase();
+		if (compressed !== "true") {
+			compressed = "false";
+		}
 		if (isDir(req)) {
-			console.log("dir");
-			storeDirectory(bucket, path, res);
+			console.log("store dir");
+			storeDirectory(bucket, path, compressed, res);
 		} else {
-			console.log("file");
-			storeFile(bucket, path, res);
+			console.log("store file");
+			storeFile(bucket, path, compressed, res);
 		}
 
 	});
 });
 
 
-function storeDirectory(bucket, path, res) {
-	res.json({success: true});
-}
+function storeDirectory(bucket, path, compressed, res) {
+	var body;
+	var contentType = "application/x-tar";
+	//remove preceding and trailing slashes for s3 key
+	//var key = path.slice(1,-1);
+	var key = path.slice(1,-1);
+	body = tar.pack(path);
 
-function storeFile(bucket, path, res) {
-	var key = path.slice(1);
-	var file;
-	if (process.env.COMPRESS === "true") {
-		console.log("Compress");
-		file = fs.createReadStream(path).pipe(zlib.createGzip());
-	} else {
-		console.log("Uncompressed");
-		file = fs.createReadStream(path);
+	if (compressed === "true") {
+		body = body.pipe(zlib.Gzip());
+		contentType = "application/x-gtar";
 	}
 	var params = {
 		Bucket: bucket,
 		Key: key,
-		Body: file
+		Body: body,
+		ContentType: contentType,
+		Metadata: {
+			compressed: compressed,
+			directory: "true"
+		}
 	};
-	s3.upload(params)
+	upload(params, res);
+}
+
+function storeFile(bucket, path, compressed, res) {
+	var body;
+	var contentType = "application/octet-stream";
+	//remove preceding slash for s3 storage key
+	var key = path.slice(1);
+	body = fs.createReadStream(path);
+	if (compressed === "true") {
+		body = body.pipe(zlib.createGzip());
+		contentType = "application/x-gzip";
+	}
+	var params = {
+		Bucket: bucket,
+		Key: key,
+		Body: body,
+		ContentType: contentType,
+		Metadata: {
+			compressed: compressed,
+			directory: "false"
+		}
+	};
+	upload(params, res);
+}
+
+function upload(params, res) {
+	console.log("uploading");
+	s3.upload(params, function(err, data) {
+		console.log("upload error:", err);
+		console.log("upload data:", data);
+	})
 		.on('httpUploadProgress', function(e) {
 			console.log("Progress:", e);
 		})
