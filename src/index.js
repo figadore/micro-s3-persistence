@@ -1,12 +1,15 @@
 var express = require('express');
-var app = express();
 var aws = require('aws-sdk');
-var bucket = process.env.S3_BUCKET_NAME;
-var s3 = new aws.S3();
-
+var path = require('path');
 var fs = require('fs');
 var zlib = require('zlib');
 var tar = require('tar-fs');
+var rmdir = require('rimraf');
+var Stream = require('stream');
+
+var app = express();
+var s3 = new aws.S3();
+var bucket = process.env.S3_BUCKET_NAME;
 
 /**
  * This API provides a way to save and restore files and directories to S3. The
@@ -23,30 +26,34 @@ app.use(function(req, res, next) {
 	next();
 });
 
-function isDir(req) {
-	var url = req.originalUrl;
-	var lastChar = url.slice(-1);
-	if (lastChar === "/") {
-		return true;
-	}
-	return false;
-}
+/*
+ * POST requests restore data from S3 to the directory or file specified by the
+ * URL. Paths ending with a slash ('/') will be treated as a directory,
+ * extracted from a tarball, overwriting existing files and leaving
+ * non-colliding existing files
+ */
+app.post('*', function(req, res, next) {
+	return restore(req, res, next, false);
+});
 
 /*
- * GET requests restore data from S3 to the directory or file specified by the
+ * PUT requests restore data from S3 to the directory or file specified by the
  * URL. Paths ending with a slash ('/') will be treated as a directory,
- * extracted from a tarball, overwriting existing files.
+ * extracted from a tarball, deleting the directory first so that permissions
+ * match those in s3 and only files existing in s3 will exist locally
  */
-app.get('*', function(req, res, next) {
-	var key;
-	var path = req.originalUrl;
-	if (isDir(req)) {
-		console.log("restore dir");
-		key = path.slice(1,-1);
-	} else {
-		console.log("restore file");
-		key = path.slice(1);
+app.put('*', function(req, res, next) {
+	return restore(req, res, next, true);
+});
+
+function restore(req, res, next, idempotent) {
+	var sourcePath = path.normalize(req.originalUrl);
+	//remove trailing slash, if it exists
+	if (sourcePath.substr(-1) === "/") {
+		sourcePath = sourcePath.substr(0, sourcePath.length - 1);
 	}
+	//remove preceding slash to get s3 key
+	var key = sourcePath.slice(1);
 	var bucket = process.env.S3_BUCKET_NAME;
 	var params = {
 		Bucket: bucket,
@@ -64,32 +71,56 @@ app.get('*', function(req, res, next) {
 			}
 		} else {
 			console.log(data.Metadata);
-			console.log(data);
-			res.json({success: true});
+			//set Body string as readable stream
+			var stream = new Stream();
+			var parentDir = path.dirname(sourcePath);
+			stream.pipe = function(dest) {
+				dest.write(data.Body);
+				return dest;
+			}
+			if (data.Metadata.iscompressed === 'true') {
+				stream = stream.pipe(zlib.Unzip());
+				console.log('Unzipped ' + sourcePath);
+			}
+			var extractPath = sourcePath;
+			if (data.Metadata.isdirectory !== "true") {
+				extractPath = parentDir;
+			}
+			if (idempotent) {
+				rmdir(sourcePath, function(err) {
+					if (err) {
+						res.status(500);
+						res.json({error: err.message});
+					} else {
+						stream.pipe(tar.extract(extractPath));
+						console.log('Extracted to ' + extractPath);
+						res.json({success: true});
+					}
+				});
+			} else {
+				stream.pipe(tar.extract(extractPath));
+				console.log('Extracted to ' + extractPath);
+				res.json({success: true});
+			}
 		}
 	});
-});
+}
 
 /**
- * PUT request copy data from the directory or file specified by the URL and
+ * GET request copy data from the directory or file specified by the URL and
  * save it to S3. Directories will be packed as a tarball.
  */
-app.put('*', function(req, res, next) {
+app.get('*', function(req, res, next) {
 	//check if file or directory exists on filesystem
-
-	//compress file or directory
-	
-	//create bucket if not exists
+	var sourcePath = path.normalize(req.originalUrl);
+	//remove trailing slash, if it exists
+	if (sourcePath.substr(-1) === "/") {
+		sourcePath = sourcePath.substr(0, sourcePath.length - 1);
+	}
 	var bucket = process.env.S3_BUCKET_NAME;
-	var params = {
-		Bucket: bucket,
-		CreateBucketConfiguration: {
-			//this doesn't seem to work
-			LocationConstraint: process.env.AWS_DEFAULT_REGION
-		}
-
-	};
-	s3.createBucket({Bucket: bucket}, function(err, data) {
+	var isFile;
+	var isDirectory;
+	function onBucketCreate(err, data) {
 		if (err) {
 			if (err.code === "BucketAlreadyOwnedByYou") {
 				console.log("Bucket already exists. Continuing.");
@@ -102,72 +133,78 @@ app.put('*', function(req, res, next) {
 			console.log("Bucket '" + bucket + "' created or already existed");
 		}
 		//bucket should exist by now. upload (compressed) file or directory
-		var path = req.originalUrl;
-		var compressed = process.env.COMPRESS.toLowerCase();
-		if (compressed !== "true") {
-			compressed = "false";
+		var metadata = {
+			"iscompressed": "true",
+			"isdirectory": "true",
+		};
+		if (process.env.COMPRESS.toLowerCase() !== "true") {
+			metadata.iscompressed = "false";
 		}
-		if (isDir(req)) {
-			console.log("store dir");
-			storeDirectory(bucket, path, compressed, res);
-		} else {
-			console.log("store file");
-			storeFile(bucket, path, compressed, res);
+		if (!isDirectory) {
+			metadata.isdirectory = "false";
 		}
+		var params = getParams(bucket, sourcePath, metadata);
+		s3Upload(params, res);
+	}
+	function onStat(err, stats) {
+		isFile = stats.isFile();
+		isDirectory = stats.isDirectory();
+		if (err) {
+			if (err.code === "ENOENT") {
+				console.log("stat err:", err);
+				res.status(404);
+				res.json({error: "'" + sourcePath + "' not found"});
+			}
+		} else if (isFile || isDirectory) {
+			//create bucket if not exists
+			var params = {
+				Bucket: bucket,
+				CreateBucketConfiguration: {
+					//this doesn't seem to work
+					LocationConstraint: process.env.AWS_DEFAULT_REGION
+				}
 
-	});
+			};
+			s3.createBucket({Bucket: bucket}, onBucketCreate);
+		} else {
+			res.status(400);
+			res.json({error: "'" + sourcePath + "' is not a file or directory. Possibly BlockDevice or other non-standard path type"});
+		}
+	}
+	fs.lstat(sourcePath, onStat);
 });
 
-
-function storeDirectory(bucket, path, compressed, res) {
+function getParams(bucket, sourcePath, metadata) {
 	var body;
 	var contentType = "application/x-tar";
+	var parentDir = path.dirname(sourcePath);
+	var basename = path.basename(sourcePath);
 	//remove preceding and trailing slashes for s3 key
-	//var key = path.slice(1,-1);
-	var key = path.slice(1,-1);
-	body = tar.pack(path);
+	var key = sourcePath.slice(1);
+	var params = {};
 
-	if (compressed === "true") {
+	if (metadata.isdirectory === "true") {
+		body = tar.pack(sourcePath);
+	} else {
+		body = tar.pack(parentDir, {
+			entries: [basename]
+		});
+	}
+	if (metadata.iscompressed === "true") {
 		body = body.pipe(zlib.Gzip());
 		contentType = "application/x-gtar";
 	}
-	var params = {
+	params = {
 		Bucket: bucket,
 		Key: key,
 		Body: body,
 		ContentType: contentType,
-		Metadata: {
-			compressed: compressed,
-			directory: "true"
-		}
+		Metadata: metadata
 	};
-	upload(params, res);
+	return params;
 }
 
-function storeFile(bucket, path, compressed, res) {
-	var body;
-	var contentType = "application/octet-stream";
-	//remove preceding slash for s3 storage key
-	var key = path.slice(1);
-	body = fs.createReadStream(path);
-	if (compressed === "true") {
-		body = body.pipe(zlib.createGzip());
-		contentType = "application/x-gzip";
-	}
-	var params = {
-		Bucket: bucket,
-		Key: key,
-		Body: body,
-		ContentType: contentType,
-		Metadata: {
-			compressed: compressed,
-			directory: "false"
-		}
-	};
-	upload(params, res);
-}
-
-function upload(params, res) {
+function s3Upload(params, res) {
 	console.log("uploading");
 	s3.upload(params, function(err, data) {
 		console.log("upload error:", err);
