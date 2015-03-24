@@ -10,7 +10,7 @@ By separating the concerns in this way, this persistence container is only respo
 Files and directories are stored as tarballs in S3, which allows them to save their permissions
 
 ##Usage
-Replace <persistence-host> with the name of the linked service. For example, if you create a container with this image and name it `s3-persister`, and `backup-container` with a link to `s3-persister:persistence`, your backup container would send requests to http://persistence.
+Replace \<persistence-host> with the name of the linked service. For example, if you create a container with this image and name it `s3-persister`, and `backup-container` with a link to `s3-persister:persistence`, your backup container would send requests to http://persistence.
 
 `GET <persistence-host>/var/www/index.js` will save the file located at `/var/www/index.js` to S3, compressed, if the COMPRESS environment variable is set to `'true'`.
 
@@ -65,3 +65,6 @@ backup-host:
     #restore on container startup
     #command: curl http://persistence/var/www -X PUT
 ```
+
+###TODO
+* Run node server as non-root?
