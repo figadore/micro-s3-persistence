@@ -40,7 +40,7 @@ Whether to compress files and directories with gzip. The trade-off is between S3
 ##Example .yml
 ```yml
 s3-persister:
-    image: shinymayhem/micro-s3-persist
+    image: shinymayhem/micro-s3-persistence
     environment:
         S3_BUCKET_NAME: web-persistence.example.com
         AWS_ACCESS_KEY_ID: mykeyid
