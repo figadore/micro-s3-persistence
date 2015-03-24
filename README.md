@@ -1,4 +1,4 @@
-This service is for persisting data from Docker volumes. It is meant to be dead-simple, and able to be dropped in anywhere with minimal configuration.
+This service is for persisting data from Docker volumes. It is meant to be dead-simple, and able to be dropped in anywhere with minimal configuration. Use it to backup local or volume data, migrate a volume to another Docker host or AWS region, or to populate a directory with backed up data when a container starts up.
 
 1. Configure S3 through environment variables
 2. Start the container with --volumes-from another container
