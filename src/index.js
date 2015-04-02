@@ -85,15 +85,18 @@ function restore(req, res, next, idempotent) {
 			//if path to extract is a directory, put contents in parent to avoid nesting
 			var extractPath = sourcePath;
 			if (data.Metadata.isdirectory !== "true") {
+				console.log("Overwrite file");
+				extractTar();
+			} else {
 				extractPath = parentDir;
 				//for PUT, clear directory first
 				if (idempotent) {
+					console.log("Replace dir with tar");
 					clearDir(sourcePath, extractTar);
 				} else {
+					console.log("Merge dir with tar");
 					extractTar();
 				}
-			} else {
-				extractTar();
 			}
 			function clearDir(dir, callback) {
 				fs.readdir(dir, function(err, list) {
@@ -104,6 +107,7 @@ function restore(req, res, next, idempotent) {
 					list.forEach(function(entry) {
 						console.log("dir entry:", entry);
 					});
+					callback();
 				});
 			}
 			function extractTar() {
