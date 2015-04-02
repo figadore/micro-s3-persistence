@@ -18,7 +18,7 @@ Replace \<persistence-host> with the name of the linked service. For example, if
 
 `PUT <persistence-host>/var/www/index.js` will download and save the file `/var/www/index.js` from S3
 
-`POST <persistence-host>/var/www/index.js` will download (and uncompress, if needed) the file `/var/www/index.js` from S3
+`POST <persistence-host>/var/www/index.js` for files, this is functionally the same as PUT
 
 ###Directories (trailing slash in url is optional)
 `GET <persistence-host>/var/www` will tar and save the directory `/var/www/` to S3
@@ -32,7 +32,7 @@ Replace \<persistence-host> with the name of the linked service. For example, if
 Name of bucket in your S3 account on AWS. Will be created if it does not exist. Bucket names must be universally unique, so namespacing it with your domain is recommended. E.g. node-persistence.example.com
 
 ###`AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`
-Credentials for S3 access. Note: For additional security, these should be a special set of credentials, created with S3 access only.
+Credentials for S3 access. Note: For additional security, these should be a special set of credentials, created with S3 access only. Using AWS IAM Roles is untested.
 
 ###`AWS_DEFAULT_REGION`
 AWS Region for bucket location. (Not sure this actually does anything)
@@ -40,7 +40,7 @@ AWS Region for bucket location. (Not sure this actually does anything)
 ###`COMPRESS`
 Whether to compress files and directories with gzip. The trade-off is between S3 storage space used (cost) and processing time (performance).
 
-##Example .yml (not tested)
+##Example .yml
 ```yml
 s3-persister:
     image: shinymayhem/micro-s3-persistence
