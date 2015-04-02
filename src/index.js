@@ -4,7 +4,7 @@ var path = require('path');
 var fs = require('fs');
 var zlib = require('zlib');
 var tar = require('tar-fs');
-var rmdir = require('rimraf');
+var fse = require('fs-extra');
 var Stream = require('stream');
 
 var app = express();
@@ -22,7 +22,7 @@ var bucket = process.env.S3_BUCKET_NAME;
  */
 app.use(function(req, res, next) {
 	var date = new Date();
-	console.log("Got " + req.method + " request to " + req.originalUrl + " at " + date.toDateString() + " " + date.toTimeString());
+	console.log("===S3-Persister==>Got " + req.method + " request to " + req.originalUrl + " at " + date.toDateString() + " " + date.toTimeString());
 	next();
 });
 
@@ -61,7 +61,7 @@ function restore(req, res, next, idempotent) {
 	};
 	var file = s3.getObject(params, function(err, data) {
 		if (err) {
-			console.log("Error:",  err);
+			console.log("===S3-Persister==>Error in getObject():",  err);
 			if (err.statusCode === 404) {
 				res.status(404);
 				res.json({error: err.message});
@@ -70,7 +70,7 @@ function restore(req, res, next, idempotent) {
 				res.json({error: err.message});
 			}
 		} else {
-			console.log(data.Metadata);
+			console.log("===S3-Persister==>Wrote ", data.Metadata);
 			//set Body string as readable stream
 			var stream = new Stream();
 			var parentDir = path.dirname(sourcePath);
@@ -80,21 +80,21 @@ function restore(req, res, next, idempotent) {
 			}
 			if (data.Metadata.iscompressed === 'true') {
 				stream = stream.pipe(zlib.Unzip());
-				console.log('Unzipped ' + sourcePath);
+				console.log('===S3-Persister==>Unzipped ' + sourcePath);
 			}
-			//if path to extract is a directory, put contents in parent to avoid nesting
 			var extractPath = sourcePath;
 			if (data.Metadata.isdirectory !== "true") {
-				console.log("Overwrite file");
+				//if path to extract is a file, put contents in parent to avoid nesting
+				extractPath = parentDir;
+				console.log("===S3-Persister==>Overwriting file");
 				extractTar();
 			} else {
-				extractPath = parentDir;
 				//for PUT, clear directory first
 				if (idempotent) {
-					console.log("Replace dir with tar");
-					clearDir(sourcePath, extractTar);
+					console.log("===S3-Persister==>Replacing dir with tar");
+					clearDir(extractPath, extractTar);
 				} else {
-					console.log("Merge dir with tar");
+					console.log("===S3-Persister==>Merging dir with tar");
 					extractTar();
 				}
 			}
@@ -102,17 +102,31 @@ function restore(req, res, next, idempotent) {
 				fs.readdir(dir, function(err, list) {
 					if (err) {
 						res.status(500);
+						console.log("===S3-Persister==>Error in clearDir():",  err);
 						res.json({error: err.message});
 					}
+					var toRemove = list.length;
+					var fullPath;
+					if (toRemove <= 0) {
+						callback();
+					}
 					list.forEach(function(entry) {
-						console.log("dir entry:", entry);
+						fullPath = dir + "/" + entry;
+						fse.remove(fullPath, function(err) {
+							if (err) {
+								console.log("===S3-Persister==>Error in remove():", err);
+							}
+							toRemove--;
+							if (toRemove <= 0) {
+								callback();
+							}
+						});
 					});
-					callback();
 				});
 			}
 			function extractTar() {
 				stream.pipe(tar.extract(extractPath));
-				console.log('Extracted to ' + extractPath);
+				console.log('===S3-Persister==>Extracted to ' + extractPath);
 				res.json({success: true});
 			}
 		}
@@ -136,14 +150,14 @@ app.get('*', function(req, res, next) {
 	function onBucketCreate(err, data) {
 		if (err) {
 			if (err.code === "BucketAlreadyOwnedByYou") {
-				console.log("Bucket already exists. Continuing.");
+				console.log("===S3-Persister==>Bucket already exists. Continuing.");
 			} else {
-				console.log("Error:",  err);
+				console.log("===S3-Persister==>Error while creating bucket:",  err);
 				res.status(500);
 				res.json({error: err.message});
 			}
 		} else {
-			console.log("Bucket '" + bucket + "' created or already existed");
+			console.log("===S3-Persister==>Bucket '" + bucket + "' created or already existed");
 		}
 		//bucket should exist by now. upload (compressed) file or directory
 		var metadata = {
@@ -164,7 +178,7 @@ app.get('*', function(req, res, next) {
 		isDirectory = stats.isDirectory();
 		if (err) {
 			if (err.code === "ENOENT") {
-				console.log("stat err:", err);
+				console.log("===S3-Persister==>Stat err:", err);
 				res.status(404);
 				res.json({error: "'" + sourcePath + "' not found"});
 			}
@@ -181,6 +195,8 @@ app.get('*', function(req, res, next) {
 			s3.createBucket({Bucket: bucket}, onBucketCreate);
 		} else {
 			res.status(400);
+			console.log("===S3-Persister==>" + err);
+			console.log("===S3-Persister==>'" + sourcePath + "' is not a file or directory. Possibly BlockDevice or other non-standard path type");
 			res.json({error: "'" + sourcePath + "' is not a file or directory. Possibly BlockDevice or other non-standard path type"});
 		}
 	}
@@ -218,26 +234,26 @@ function getParams(bucket, sourcePath, metadata) {
 }
 
 function s3Upload(params, res) {
-	console.log("uploading");
+	console.log("===S3-Persister==>uploading");
 	s3.upload(params, function(err, data) {
-		console.log("upload error:", err);
-		console.log("upload data:", data);
+		console.log("===S3-Persister==>Upload error:", err);
+		console.log("===S3-Persister==>Upload data:", data);
 	})
 		.on('httpUploadProgress', function(e) {
-			console.log("Progress:", e);
+			console.log("===S3-Persister==>Upload Progress:", e);
 		})
 		.send(function(err, data) {
 			if (err) {
-				console.log("Error:",  err);
+				console.log("===S3-Persister==>Error while uploading:",  err);
 				res.status(500);
 				res.json({error: err.message});
 			} else {
-				console.log("data:", data);
+				console.log("===S3-Persister==>Upload complete. Data:", data);
 				res.json({success: true, data: data});
 			}
 		});
 }
 
 var server = app.listen(80, function() {
-	console.log("S3 persistence server started on port 80");
+	console.log("===S3-Persister==>S3 persistence server started on port 80");
 });
