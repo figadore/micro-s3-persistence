@@ -82,22 +82,31 @@ function restore(req, res, next, idempotent) {
 				stream = stream.pipe(zlib.Unzip());
 				console.log('Unzipped ' + sourcePath);
 			}
+			//if path to extract is a directory, put contents in parent to avoid nesting
 			var extractPath = sourcePath;
 			if (data.Metadata.isdirectory !== "true") {
 				extractPath = parentDir;
+				//for PUT, clear directory first
+				if (idempotent) {
+					clearDir(sourcePath, extractTar);
+				} else {
+					extractTar();
+				}
+			} else {
+				extractTar();
 			}
-			if (idempotent) {
-				rmdir(sourcePath, function(err) {
+			function clearDir(dir, callback) {
+				fs.readdir(dir, function(err, list) {
 					if (err) {
 						res.status(500);
 						res.json({error: err.message});
-					} else {
-						stream.pipe(tar.extract(extractPath));
-						console.log('Extracted to ' + extractPath);
-						res.json({success: true});
 					}
+					list.forEach(function(entry) {
+						console.log("dir entry:", entry);
+					});
 				});
-			} else {
+			}
+			function extractTar() {
 				stream.pipe(tar.extract(extractPath));
 				console.log('Extracted to ' + extractPath);
 				res.json({success: true});
