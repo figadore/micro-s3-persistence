@@ -25,17 +25,17 @@ COMPRESS=true
 then connect to it with any HTTP client in another container. For example
 
 ```
-docker run --rm --link persist busyboxplus:curl curl http://persist/var/www
+docker run --rm --link persist radial/busyboxplus:curl curl http://persist/var/www
 ```
 backs up the volume /var/www, and 
 
 ```
-docker run --rm --link persist busyboxplus:curl curl http://persist/var/www -X POST
+docker run --rm --link persist radial/busyboxplus:curl curl http://persist/var/www -X POST
 ```
 restores /var/www from S3, merging with local files. Finally
 
 ```
-docker run --rm --link persist busyboxplus:curl curl http://persist/var/www -X PUT
+docker run --rm --link persist radial/busyboxplus:curl curl http://persist/var/www -X PUT
 ```
 restores /var/www from S3, removing local files first
 
