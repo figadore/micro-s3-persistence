@@ -7,10 +7,40 @@ This image is for persisting data from Docker volumes. Use it to backup local or
 
 By separating the concerns in this way, this persistence container is only responsible for saving and restoring data between its volumes and S3. Another container can be responsible for backups, easily cron-able, or for initial container configuration.
 
-Files and directories are stored as tarballs in S3, which allows them to save their permissions
+Files and directories are stored as tarballs in S3, which allows their permissions to be restored
+
+##Quickstart
+Configure and run a container with this image
+```bash
+docker run -d --env-file s3-env.txt --volumes-from web --name persist shinymayhem/micro-s3-persistence
+```
+where s3-env.txt contains
+```
+S3_BUCKET_NAME=web-persistence.example.com
+AWS_ACCESS_KEY_ID=mykeyid
+AWS_SECRET_ACCESS_KEY=mykey
+AWS_DEFAULT_REGION=us-east-2
+COMPRESS=true
+```
+then connect to it with any HTTP client in another container. For example
+
+```
+docker run --rm --link persist radial/busyboxplus:curl curl http://persist/var/www
+```
+backs up the volume /var/www, and 
+
+```
+docker run --rm --link persist radial/busyboxplus:curl curl http://persist/var/www -X POST
+```
+restores /var/www from S3, merging with local files. Finally
+
+```
+docker run --rm --link persist radial/busyboxplus:curl curl http://persist/var/www -X PUT
+```
+restores /var/www from S3, removing local files first
 
 ##Usage
-Replace \<persistence-host> with the name of the linked service. For example, if you create a container with this image and name it `s3-persister`, and `backup-container` with a link to `s3-persister:persistence`, your backup container would send requests to http://persistence.
+Replace \<persistence-host> with the name of the linked persistence service. For example, if you create a container with this image and name it `s3-persister`, and then `backup-container` with a link to `s3-persister:persistence`, your backup container would send requests to http://persistence.
 
 
 ###Files
@@ -21,11 +51,12 @@ Replace \<persistence-host> with the name of the linked service. For example, if
 `POST <persistence-host>/var/www/index.js` for files, this is functionally the same as PUT
 
 ###Directories (trailing slash in url is optional)
-`GET <persistence-host>/var/www` will tar and save the directory `/var/www/` to S3
+`GET <persistence-host>/var/www` will save the contents of the directory `/var/www/` to S3
 
-`PUT <persistence-host>/var/www` will download and untar the directory `/var/www/` from S3 after deleting the target directory. This clears any files not in the S3 object. (e.g. if /var/www/.gitignore exists locally but not in S3, it will not exist after the PUT)
+`PUT <persistence-host>/var/www` will download the directory from S3 and place its contents in `/var/www/` after deleting the target directory first. This clears any files not in the S3 object. (e.g. if /var/www/.gitignore exists locally but not in S3, it will not exist after the PUT)
 
-`POST <persistence-host>/var/www` will download and untar the directory `/var/www/` from S3. This will merge local files with those from the S3 object. (e.g. if /var/www/.gitignore exists locally but not in S3, it will still exist after the POST)
+`POST <persistence-host>/var/www` will download directory from S3 and place its contents in `/var/www/`. This will merge local files with those from the S3 object. (e.g. if /var/www/.gitignore exists locally but not in S3, it will still exist after the POST)
+
 
 ##Configuration
 ###`S3_BUCKET_NAME`
@@ -54,12 +85,13 @@ s3-persister:
     volumes_from:
         - web
 web:
-    image: node
+    image: shinymayhem/node
     volumes:
-        - /var/www
+        - /var/www:/var/www
     ports:
         - "80:80"
 backup-host:
+    #in this example, the image would periodically send an http request which would backup data in the volume
     image:some/cronjob/image
     links:
         - s3-persister:persistence
