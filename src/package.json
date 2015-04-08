@@ -1,6 +1,6 @@
 {
 	"scripts": {
-	  "start": "node index.js"
+	  "start": "forever index.js"
 	},
 	"dependencies": {
 		"express": "~4.12.2",
